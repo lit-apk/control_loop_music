@@ -14,11 +14,13 @@ from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QSizePolicy,
     QSlider,
+    QStackedLayout,
     QVBoxLayout,
     QWidget,
 )
@@ -39,6 +41,58 @@ def format_seconds(milliseconds: int) -> str:
     return f"{max(0, milliseconds / 1000):.2f}s"
 
 
+def parse_time_ms(text: str) -> int:
+    parts = text.strip().split(":")
+    if not parts or any(not part.isdigit() for part in parts):
+        raise ValueError("time must use digits and ':'")
+    if len(parts) == 1:
+        hours = 0
+        minutes = 0
+        seconds = int(parts[0])
+    elif len(parts) == 2:
+        hours = 0
+        minutes = int(parts[0])
+        seconds = int(parts[1])
+    elif len(parts) == 3:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+        seconds = int(parts[2])
+    else:
+        raise ValueError("time must be SS, MM:SS, or HH:MM:SS")
+    if minutes >= 60 or seconds >= 60:
+        raise ValueError("minutes and seconds must be below 60")
+    return ((hours * 60 + minutes) * 60 + seconds) * 1000
+
+
+def parse_range_ms(text: str) -> tuple[int, int]:
+    parts = text.replace("Loop:", "").split("-", 1)
+    if len(parts) != 2:
+        raise ValueError("range must look like 00:00-00:28")
+    return parse_time_ms(parts[0]), parse_time_ms(parts[1])
+
+
+class EditableLabel(QLabel):
+    editRequested = pyqtSignal()
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__(text)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet(
+            """
+            QLabel {
+                border: 1px solid #9aa4b2;
+                border-radius: 3px;
+                padding: 4px 8px;
+            }
+            """
+        )
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.editRequested.emit()
+        super().mousePressEvent(event)
+
+
 class LoopRangeBar(QWidget):
     """A full-width draggable start/end range selector."""
 
@@ -46,7 +100,9 @@ class LoopRangeBar(QWidget):
     positionChangedRequested = pyqtSignal(int)
 
     HANDLE_RADIUS = 10
-    TRACK_HEIGHT = 34
+    MIN_TRACK_HEIGHT = 24
+    LABEL_SPACE = 22
+    VERTICAL_MARGIN = 8
     MIN_GAP_MS = 250
 
     def __init__(self, waveform_renderer: WaveformRenderer | None = None) -> None:
@@ -59,7 +115,7 @@ class LoopRangeBar(QWidget):
         self._waveform_renderer = waveform_renderer or VerticalBarsWaveformRenderer()
         self._dragging: str | None = None
         self.setMinimumHeight(72)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
 
     def set_duration(self, duration: int) -> None:
@@ -72,6 +128,18 @@ class LoopRangeBar(QWidget):
     def set_position(self, position: int) -> None:
         self._position = max(0, min(position, self._duration))
         self.update()
+
+    def set_range(self, start: int, end: int) -> None:
+        min_gap = min(self.MIN_GAP_MS, self._duration)
+        start = max(0, min(start, self._duration))
+        end = max(0, min(end, self._duration))
+        if end - start < min_gap:
+            raise ValueError(f"loop range must be at least {min_gap / 1000:.2f}s")
+        self._start = start
+        self._end = end
+        self._position = max(self._start, min(self._position, self._end))
+        self.update()
+        self.rangeChanged.emit(self._start, self._end)
 
     def set_waveform(self, waveform: list[float]) -> None:
         self._waveform = waveform
@@ -86,18 +154,19 @@ class LoopRangeBar(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         left, right = self._track_bounds()
-        center_y = self.height() // 2
-        track_y = center_y - self.TRACK_HEIGHT // 2
+        track_height = self._track_height()
+        track_y = self.LABEL_SPACE
+        center_y = track_y + track_height // 2
 
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#eef1f5"))
-        painter.drawRoundedRect(left, track_y, right - left, self.TRACK_HEIGHT, 5, 5)
-        self._waveform_renderer.draw(painter, self._waveform, left, right, center_y, self.TRACK_HEIGHT)
+        painter.drawRoundedRect(left, track_y, right - left, track_height, 5, 5)
+        self._waveform_renderer.draw(painter, self._waveform, left, right, center_y, track_height)
 
         start_x = self._ms_to_x(self._start)
         end_x = self._ms_to_x(self._end)
         painter.setBrush(QColor(47, 128, 237, 56))
-        painter.drawRoundedRect(start_x, track_y, end_x - start_x, self.TRACK_HEIGHT, 5, 5)
+        painter.drawRoundedRect(start_x, track_y, end_x - start_x, track_height, 5, 5)
 
         painter.setBrush(QColor("#ffffff"))
         painter.setPen(QPen(QColor("#1d4f91"), 2))
@@ -106,13 +175,13 @@ class LoopRangeBar(QWidget):
 
         position_x = self._ms_to_x(self._position)
         line_top = track_y - 2
-        line_bottom = track_y + self.TRACK_HEIGHT + 2
+        line_bottom = track_y + track_height + 2
         painter.setPen(QPen(QColor("#d62828"), 3))
         painter.drawLine(position_x, line_top, position_x, line_bottom)
 
         painter.setPen(QColor("#1f2937"))
-        self._draw_handle_label(painter, start_x, center_y - self.HANDLE_RADIUS - 8, format_seconds(self._start))
-        self._draw_handle_label(painter, end_x, center_y - self.HANDLE_RADIUS - 8, format_seconds(self._end))
+        self._draw_handle_label(painter, start_x, 14, format_seconds(self._start))
+        self._draw_handle_label(painter, end_x, 14, format_seconds(self._end))
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() != Qt.MouseButton.LeftButton or self._duration <= 0:
@@ -165,6 +234,10 @@ class LoopRangeBar(QWidget):
     def _track_bounds(self) -> tuple[int, int]:
         pad = self.HANDLE_RADIUS + 4
         return pad, max(pad + 1, self.width() - pad)
+
+    def _track_height(self) -> int:
+        available = self.height() - self.LABEL_SPACE - self.VERTICAL_MARGIN
+        return max(self.MIN_TRACK_HEIGHT, available)
 
     def _ms_to_x(self, value: int) -> int:
         left, right = self._track_bounds()
@@ -304,7 +377,10 @@ class LoopPlayerWindow(QMainWindow):
         self.waveform_decoder = WaveformDecoder(music_path, self.loop_bar)
         self.play_button = QPushButton("Pause")
         self.position_label = QLabel("0:00 / 0:00")
-        self.range_label = QLabel("Loop: 0:00 - 0:00")
+        self.range_label = EditableLabel("Loop: 0:00 - 0:00")
+        self.range_input = QLineEdit()
+        self.range_editor = QWidget()
+        self.range_editor_layout = QStackedLayout()
         self.status_label = QLabel(str(music_path))
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
 
@@ -320,6 +396,11 @@ class LoopPlayerWindow(QMainWindow):
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(80)
         self.volume_slider.setFixedWidth(150)
+        self.range_input.setPlaceholderText("00:00-00:28")
+        self.range_editor_layout.addWidget(self.range_label)
+        self.range_editor_layout.addWidget(self.range_input)
+        self.range_editor_layout.setContentsMargins(0, 0, 0, 0)
+        self.range_editor.setLayout(self.range_editor_layout)
 
         controls = QHBoxLayout()
         controls.addWidget(self.play_button)
@@ -330,8 +411,8 @@ class LoopPlayerWindow(QMainWindow):
 
         layout = QVBoxLayout()
         layout.addWidget(self.status_label)
-        layout.addWidget(self.loop_bar)
-        layout.addWidget(self.range_label)
+        layout.addWidget(self.loop_bar, 1)
+        layout.addWidget(self.range_editor)
         layout.addLayout(controls)
 
         central = QWidget()
@@ -343,6 +424,9 @@ class LoopPlayerWindow(QMainWindow):
         self.volume_slider.valueChanged.connect(lambda value: self.audio_output.setVolume(value / 100))
         self.loop_bar.rangeChanged.connect(self._on_loop_range_changed)
         self.loop_bar.positionChangedRequested.connect(self._seek_to)
+        self.range_label.editRequested.connect(self._start_range_edit)
+        self.range_input.returnPressed.connect(self._commit_range_edit)
+        self.range_input.editingFinished.connect(self._commit_range_edit)
 
         self.player.durationChanged.connect(self._on_duration_changed)
         self.player.positionChanged.connect(self._on_position_changed)
@@ -382,6 +466,29 @@ class LoopPlayerWindow(QMainWindow):
         self.player.setPosition(position)
         self.loop_bar.set_position(position)
         self._update_labels(position)
+
+    def _start_range_edit(self) -> None:
+        start, end = self.loop_bar.range()
+        self.range_input.setText(f"{format_ms(start)}-{format_ms(end)}")
+        self.range_editor_layout.setCurrentWidget(self.range_input)
+        self.range_input.setFocus(Qt.FocusReason.MouseFocusReason)
+        self.range_input.selectAll()
+
+    def _commit_range_edit(self) -> None:
+        if self.range_editor_layout.currentWidget() is not self.range_input:
+            return
+        text = self.range_input.text()
+        try:
+            start, end = parse_range_ms(text)
+            duration = self.player.duration()
+            if duration > 0 and end > duration:
+                raise ValueError(f"loop end is past duration {format_ms(duration)}")
+            self.loop_bar.set_range(start, end)
+            self._seek_to(max(start, min(self.player.position(), end)))
+        except ValueError as error:
+            QMessageBox.warning(self, "Invalid loop range", f"{error}\n\nUse a range like 00:00-00:28.")
+        finally:
+            self.range_editor_layout.setCurrentWidget(self.range_label)
 
     def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
