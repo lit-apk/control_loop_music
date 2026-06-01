@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import sys
+from array import array
 from pathlib import Path
 
 from PyQt6.QtCore import QUrl, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFontMetrics, QPainter, QPen
-from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PyQt6.QtMultimedia import QAudioBuffer, QAudioDecoder, QAudioFormat, QAudioOutput, QMediaPlayer
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -21,6 +22,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from waveform_renderers import VerticalBarsWaveformRenderer, WaveformRenderer
 
 
 def format_ms(milliseconds: int) -> str:
@@ -43,15 +46,17 @@ class LoopRangeBar(QWidget):
     positionChangedRequested = pyqtSignal(int)
 
     HANDLE_RADIUS = 10
-    TRACK_HEIGHT = 8
+    TRACK_HEIGHT = 34
     MIN_GAP_MS = 250
 
-    def __init__(self) -> None:
+    def __init__(self, waveform_renderer: WaveformRenderer | None = None) -> None:
         super().__init__()
         self._duration = 0
         self._start = 0
         self._end = 0
         self._position = 0
+        self._waveform: list[float] = []
+        self._waveform_renderer = waveform_renderer or VerticalBarsWaveformRenderer()
         self._dragging: str | None = None
         self.setMinimumHeight(72)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -68,6 +73,10 @@ class LoopRangeBar(QWidget):
         self._position = max(0, min(position, self._duration))
         self.update()
 
+    def set_waveform(self, waveform: list[float]) -> None:
+        self._waveform = waveform
+        self.update()
+
     def range(self) -> tuple[int, int]:
         return self._start, self._end
 
@@ -81,13 +90,14 @@ class LoopRangeBar(QWidget):
         track_y = center_y - self.TRACK_HEIGHT // 2
 
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#d4d8df"))
-        painter.drawRoundedRect(left, track_y, right - left, self.TRACK_HEIGHT, 4, 4)
+        painter.setBrush(QColor("#eef1f5"))
+        painter.drawRoundedRect(left, track_y, right - left, self.TRACK_HEIGHT, 5, 5)
+        self._waveform_renderer.draw(painter, self._waveform, left, right, center_y, self.TRACK_HEIGHT)
 
         start_x = self._ms_to_x(self._start)
         end_x = self._ms_to_x(self._end)
-        painter.setBrush(QColor("#2f80ed"))
-        painter.drawRoundedRect(start_x, track_y, end_x - start_x, self.TRACK_HEIGHT, 4, 4)
+        painter.setBrush(QColor(47, 128, 237, 56))
+        painter.drawRoundedRect(start_x, track_y, end_x - start_x, self.TRACK_HEIGHT, 5, 5)
 
         painter.setBrush(QColor("#ffffff"))
         painter.setPen(QPen(QColor("#1d4f91"), 2))
@@ -95,8 +105,8 @@ class LoopRangeBar(QWidget):
         painter.drawEllipse(end_x - self.HANDLE_RADIUS, center_y - self.HANDLE_RADIUS, self.HANDLE_RADIUS * 2, self.HANDLE_RADIUS * 2)
 
         position_x = self._ms_to_x(self._position)
-        line_top = center_y - self.HANDLE_RADIUS - 2
-        line_bottom = center_y + self.HANDLE_RADIUS + 2
+        line_top = track_y - 2
+        line_bottom = track_y + self.TRACK_HEIGHT + 2
         painter.setPen(QPen(QColor("#d62828"), 3))
         painter.drawLine(position_x, line_top, position_x, line_bottom)
 
@@ -175,6 +185,106 @@ class LoopRangeBar(QWidget):
         x = max(0, min(self.width() - text_width, center_x - text_width // 2))
         painter.drawText(x, baseline_y, text)
 
+class WaveformDecoder:
+    """Decode an audio file into compact per-slice amplitude peaks."""
+
+    TARGET_SAMPLES = 2000
+
+    def __init__(self, source: Path, receiver: LoopRangeBar) -> None:
+        self.receiver = receiver
+        self.decoder = QAudioDecoder(receiver)
+        self.decoder.setSource(QUrl.fromLocalFile(str(source)))
+
+        self._peaks = [0.0] * self.TARGET_SAMPLES
+        self._duration_us = 0
+        self._decoded_us = 0
+        self._buffers_seen = 0
+
+        self.decoder.durationChanged.connect(self._set_duration)
+        self.decoder.bufferReady.connect(self._read_buffer)
+        self.decoder.finished.connect(self._finish)
+        self.decoder.error.connect(self._fail)
+        self.decoder.start()
+
+    def _set_duration(self, duration_ms: int) -> None:
+        self._duration_us = max(0, duration_ms * 1000)
+
+    def _read_buffer(self) -> None:
+        buffer = self.decoder.read()
+        if not buffer.isValid():
+            return
+
+        self._buffers_seen += 1
+        duration_us = max(1, buffer.duration())
+        start_us = buffer.startTime()
+        if start_us < 0:
+            start_us = self._decoded_us
+        self._decoded_us = max(self._decoded_us, start_us + duration_us)
+        if self._duration_us <= 0:
+            self._duration_us = max(self._decoded_us, duration_us)
+
+        samples = normalized_samples(buffer)
+        if not samples:
+            return
+
+        channel_count = max(1, buffer.format().channelCount())
+        frame_count = max(1, len(samples) // channel_count)
+        for frame_index in range(frame_count):
+            absolute_us = start_us + frame_index * duration_us // frame_count
+            bucket = min(self.TARGET_SAMPLES - 1, max(0, absolute_us * self.TARGET_SAMPLES // self._duration_us))
+            frame_peak = 0.0
+            base = frame_index * channel_count
+            for channel in range(channel_count):
+                frame_peak = max(frame_peak, abs(samples[base + channel]))
+            self._peaks[bucket] = max(self._peaks[bucket], frame_peak)
+
+        if self._buffers_seen % 8 == 0:
+            self.receiver.set_waveform(self._smoothed_peaks())
+
+    def _finish(self) -> None:
+        self.receiver.set_waveform(self._smoothed_peaks())
+
+    def _fail(self, *args) -> None:
+        del args
+        self.receiver.set_waveform([])
+
+    def _smoothed_peaks(self) -> list[float]:
+        peak_max = max(self._peaks, default=0.0)
+        if peak_max <= 0:
+            return []
+        return [min(1.0, peak / peak_max) for peak in self._peaks]
+
+
+def normalized_samples(buffer: QAudioBuffer) -> list[float]:
+    audio_format = buffer.format()
+    sample_format = audio_format.sampleFormat()
+    byte_count = buffer.byteCount()
+    if byte_count <= 0:
+        return []
+
+    raw = buffer.constData().asstring(byte_count)
+    if sample_format == QAudioFormat.SampleFormat.UInt8:
+        return [(value - 128) / 128 for value in raw]
+    if sample_format == QAudioFormat.SampleFormat.Int16:
+        values = array("h")
+        values.frombytes(raw)
+        if sys.byteorder != "little":
+            values.byteswap()
+        return [max(-1.0, min(1.0, value / 32768)) for value in values]
+    if sample_format == QAudioFormat.SampleFormat.Int32:
+        values = array("i")
+        values.frombytes(raw)
+        if sys.byteorder != "little":
+            values.byteswap()
+        return [max(-1.0, min(1.0, value / 2147483648)) for value in values]
+    if sample_format == QAudioFormat.SampleFormat.Float:
+        values = array("f")
+        values.frombytes(raw)
+        if sys.byteorder != "little":
+            values.byteswap()
+        return [max(-1.0, min(1.0, value)) for value in values]
+    return []
+
 
 class LoopPlayerWindow(QMainWindow):
     def __init__(self, music_path: Path) -> None:
@@ -191,6 +301,7 @@ class LoopPlayerWindow(QMainWindow):
         self.player.setSource(QUrl.fromLocalFile(str(music_path)))
 
         self.loop_bar = LoopRangeBar()
+        self.waveform_decoder = WaveformDecoder(music_path, self.loop_bar)
         self.play_button = QPushButton("Pause")
         self.position_label = QLabel("0:00 / 0:00")
         self.range_label = QLabel("Loop: 0:00 - 0:00")
@@ -292,7 +403,7 @@ class LoopPlayerWindow(QMainWindow):
 
 def main(argv: list[str]) -> int:
     if len(argv) != 2:
-        print(f"Usage: {Path(argv[0]).name} MUSIC_FILE", file=sys.stderr)
+        print("Usage: python3 src/main.py MUSIC_FILE", file=sys.stderr)
         return 2
 
     music_path = Path(argv[1]).expanduser().resolve()
