@@ -38,7 +38,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import java.io.IOException
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import kotlin.math.max
@@ -136,7 +135,7 @@ class MainActivity : Activity()
         }
         setContentView(buildUi())
         if (savedInstanceState == null) {
-            openAudioPicker()
+            openLastAudioOrPicker()
         } else {
             restoreFromBundle(savedInstanceState)
         }
@@ -167,7 +166,7 @@ class MainActivity : Activity()
         super.onActivityResult(requestCode, resultCode, data)
         val uri = data?.data
         if (requestCode == PICK_AUDIO && resultCode == RESULT_OK && uri != null) {
-            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            persistReadPermission(uri)
             loadAudio(uri)
         }
     }
@@ -266,6 +265,18 @@ class MainActivity : Activity()
         startActivityForResult(intent, PICK_AUDIO)
     }
 
+    private fun openLastAudioOrPicker() {
+        val uriText = preferences().getString(PREF_LAST_URI, null)
+        if (uriText.isNullOrBlank()) {
+            openAudioPicker()
+            return
+        }
+        if (!loadAudio(Uri.parse(uriText), openPickerOnFailure = true)) {
+            clearLastOpenedUri()
+            openAudioPicker()
+        }
+    }
+
     private fun loadAudio(
         uri: Uri,
         restorePositionMs: Long = 0,
@@ -273,7 +284,8 @@ class MainActivity : Activity()
         restoreEndMs: Long? = null,
         shouldPlay: Boolean = false,
         restoredWaveform: FloatArray? = null,
-    ) {
+        openPickerOnFailure: Boolean = false,
+    ): Boolean {
         handler.removeCallbacks(tick)
         prepared = false
         currentUri = uri
@@ -325,6 +337,7 @@ class MainActivity : Activity()
                 }
                 prepareAsync()
             }
+            saveLastOpenedUri(uri)
             statusText.text = displayNameForUri(uri)
             if (!hasRestoredWaveform) {
                 val requestId = ++waveformRequestId
@@ -338,8 +351,11 @@ class MainActivity : Activity()
             currentTitle = displayNameForUri(uri)
             updateMediaMetadata()
             updateMediaNotification()
-        } catch (_: IOException) {
+            return true
+        } catch (_: Exception) {
             Toast.makeText(this, "Could not open audio file", Toast.LENGTH_LONG).show()
+            if (openPickerOnFailure) clearLastOpenedUri()
+            return false
         }
     }
 
@@ -360,6 +376,23 @@ class MainActivity : Activity()
             restoredWaveform = state.getFloatArray(KEY_WAVEFORM),
         )
     }
+
+    private fun persistReadPermission(uri: Uri) {
+        try {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun saveLastOpenedUri(uri: Uri) {
+        preferences().edit().putString(PREF_LAST_URI, uri.toString()).apply()
+    }
+
+    private fun clearLastOpenedUri() {
+        preferences().edit().remove(PREF_LAST_URI).apply()
+    }
+
+    private fun preferences() = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     private fun togglePlayback() {
         val current = player
@@ -606,5 +639,7 @@ class MainActivity : Activity()
         private const val KEY_POSITION = "position"
         private const val KEY_SHOULD_PLAY = "should_play"
         private const val KEY_WAVEFORM = "waveform"
+        private const val PREFS_NAME = "playback"
+        private const val PREF_LAST_URI = "last_uri"
     }
 }
