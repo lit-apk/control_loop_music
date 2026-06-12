@@ -303,6 +303,17 @@ class MainActivity : Activity()
             player?.apply {
                 setWakeMode(this@MainActivity, PowerManager.PARTIAL_WAKE_LOCK)
                 setDataSource(this@MainActivity, uri)
+
+                // replay when the song played completely
+                setOnCompletionListener {
+                    seekTo(loopStartMs.toInt())
+                    loopRangeView.setPosition(loopStartMs)
+                    start()
+                    acquirePlaybackWakeLock()
+                    playButton.text = "Pause"
+                    updateMediaNotification()
+                }
+
                 setOnPreparedListener {
                     prepared = true
                     val duration = it.duration.toLong()
@@ -406,7 +417,7 @@ class MainActivity : Activity()
             playButton.text = "Play"
         } else {
             val position = current.currentPosition.toLong()
-            if (position < loopStartMs || position > loopEndMs) {
+            if (position < loopStartMs || position >= loopEndMs) {
                 current.seekTo(loopStartMs.toInt())
             }
             current.start()
