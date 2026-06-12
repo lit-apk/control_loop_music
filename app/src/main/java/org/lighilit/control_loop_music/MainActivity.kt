@@ -8,6 +8,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
+import android.content.res.Configuration
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.BroadcastReceiver
@@ -34,6 +35,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import java.io.IOException
@@ -65,6 +67,8 @@ class MainActivity : Activity()
     private var restoringState = false
     private var prepared = false
     private var currentTitle = "Control Loop Music"
+    private var currentWaveform = FloatArray(0)
+    private var waveformRequestId = 0
 
     private val notificationActionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -146,6 +150,7 @@ class MainActivity : Activity()
         outState.putLong(KEY_LOOP_END, loopEndMs)
         outState.putLong(KEY_POSITION, current?.takeIf { prepared }?.currentPosition?.toLong() ?: restorePositionMs)
         outState.putBoolean(KEY_SHOULD_PLAY, current?.isPlaying == true)
+        outState.putFloatArray(KEY_WAVEFORM, currentWaveform)
     }
 
     override fun onDestroy() {
@@ -174,11 +179,15 @@ class MainActivity : Activity()
         }
     }
 
-    private fun buildUi(): LinearLayout {
+    private fun buildUi(): View {
+        val scroll = ScrollView(this).apply {
+            setFillViewport(true)
+            clipToPadding = false
+            applySystemBarPadding(this)
+        }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(12), dp(12), dp(12))
-            applySystemBarPadding(this)
         }
 
         statusText = TextView(this).apply { text = "Choose an audio file" }
@@ -197,7 +206,7 @@ class MainActivity : Activity()
                 }
             })
         }
-        root.addView(loopRangeView, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(loopRangeView, LinearLayout.LayoutParams(-1, waveformViewHeight()))
 
         val rangeEditor = FrameLayout(this)
         rangeLabel = TextView(this).apply {
@@ -236,7 +245,16 @@ class MainActivity : Activity()
         controls.addView(positionText, LinearLayout.LayoutParams(0, -2, 1f))
         controls.addView(openButton)
         root.addView(controls, LinearLayout.LayoutParams(-1, -2))
-        return root
+        scroll.addView(root, FrameLayout.LayoutParams(-1, -2))
+        return scroll
+    }
+
+    private fun waveformViewHeight(): Int {
+        return if (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+            dp(132)
+        } else {
+            dp(260)
+        }
     }
 
     private fun openAudioPicker() {
@@ -248,10 +266,20 @@ class MainActivity : Activity()
         startActivityForResult(intent, PICK_AUDIO)
     }
 
-    private fun loadAudio(uri: Uri, restorePositionMs: Long = 0, restoreStartMs: Long? = null, restoreEndMs: Long? = null, shouldPlay: Boolean = false) {
+    private fun loadAudio(
+        uri: Uri,
+        restorePositionMs: Long = 0,
+        restoreStartMs: Long? = null,
+        restoreEndMs: Long? = null,
+        shouldPlay: Boolean = false,
+        restoredWaveform: FloatArray? = null,
+    ) {
         handler.removeCallbacks(tick)
         prepared = false
         currentUri = uri
+        val hasRestoredWaveform = restoredWaveform?.isNotEmpty() == true
+        currentWaveform = restoredWaveform?.takeIf { hasRestoredWaveform } ?: FloatArray(0)
+        loopRangeView.setWaveform(currentWaveform)
         this.restorePositionMs = restorePositionMs
         restoreLoopStartMs = restoreStartMs ?: 0
         restoreLoopEndMs = restoreEndMs ?: 0
@@ -298,7 +326,15 @@ class MainActivity : Activity()
                 prepareAsync()
             }
             statusText.text = displayNameForUri(uri)
-            WaveformExtractor.extract(this, uri) { peaks -> loopRangeView.setWaveform(peaks) }
+            if (!hasRestoredWaveform) {
+                val requestId = ++waveformRequestId
+                WaveformExtractor.extract(this, uri) { peaks ->
+                    if (requestId == waveformRequestId && uri == currentUri) {
+                        currentWaveform = peaks
+                        loopRangeView.setWaveform(peaks)
+                    }
+                }
+            }
             currentTitle = displayNameForUri(uri)
             updateMediaMetadata()
             updateMediaNotification()
@@ -321,6 +357,7 @@ class MainActivity : Activity()
             restoreStartMs = state.getLong(KEY_LOOP_START, 0),
             restoreEndMs = state.getLong(KEY_LOOP_END, 0),
             shouldPlay = state.getBoolean(KEY_SHOULD_PLAY, false),
+            restoredWaveform = state.getFloatArray(KEY_WAVEFORM),
         )
     }
 
@@ -568,5 +605,6 @@ class MainActivity : Activity()
         private const val KEY_LOOP_END = "loop_end"
         private const val KEY_POSITION = "position"
         private const val KEY_SHOULD_PLAY = "should_play"
+        private const val KEY_WAVEFORM = "waveform"
     }
 }
