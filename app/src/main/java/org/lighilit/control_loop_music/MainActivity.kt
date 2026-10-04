@@ -15,6 +15,7 @@ import android.content.BroadcastReceiver
 import android.database.Cursor
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.Icon
 import android.media.MediaMetadata
 import android.media.MediaPlayer
 import android.media.session.MediaSession
@@ -588,12 +589,7 @@ class MainActivity : Activity()
         updatePlaybackState()
         val current = player
         val isPlaying = current?.isPlaying == true
-        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
-        } else {
-            Notification.Builder(this)
-        }
-        val notification = builder
+        val notification = Notification.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_music_note)
             .setContentTitle(currentTitle)
             .setContentText("Loop ${TimeUtil.formatMs(loopStartMs)} - ${TimeUtil.formatMs(loopEndMs)}")
@@ -601,9 +597,14 @@ class MainActivity : Activity()
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setShowWhen(false)
             .setOngoing(isPlaying)
-            .addAction(R.drawable.ic_loop_start, "Loop start", actionPendingIntent(ACTION_TO_START, 1))
-            .addAction(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play, "Play/Pause", actionPendingIntent(ACTION_TOGGLE_PLAY, 2))
-            .addAction(R.drawable.ic_loop_end, "Loop end", actionPendingIntent(ACTION_TO_END, 3))
+            .addAction(buildNotificationAction(R.drawable.ic_loop_start, "Loop start", ACTION_TO_START, 1))
+            .addAction(buildNotificationAction(
+                    if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play,
+                    "Play/Pause",
+                    ACTION_TOGGLE_PLAY,
+                    2
+	    ))
+            .addAction(buildNotificationAction(R.drawable.ic_loop_end, "Loop end", ACTION_TO_END, 3))
             .setStyle(
                 Notification.MediaStyle()
                     .setMediaSession(mediaSession.sessionToken)
@@ -622,6 +623,14 @@ class MainActivity : Activity()
     private fun canPostNotifications(): Boolean {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun buildNotificationAction(iconResId: Int, title: String, action: String, requestCode: Int): Notification.Action {
+        return Notification.Action.Builder(
+            Icon.createWithResource(this, iconResId),
+            title,
+            actionPendingIntent(action, requestCode)
+        ).build()
     }
 
     private fun actionPendingIntent(action: String, requestCode: Int): PendingIntent {
