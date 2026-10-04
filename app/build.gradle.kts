@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "org.lighilit.control_loop_music"
+    namespace = "top.lighilit.control_loop_music"
     compileSdk {
         version = release(36) {
             minorApiLevel = 1
@@ -12,7 +12,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "org.lighilit.control_loop_music"
+        applicationId = "top.lighilit.control_loop_music"
         minSdk = 30
         targetSdk = 36
         versionCode = 1

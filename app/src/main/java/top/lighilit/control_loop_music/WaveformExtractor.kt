@@ -1,5 +1,5 @@
 //package com.example.controlloopmusic
-package org.lighilit.control_loop_music
+package top.lighilit.control_loop_music
 
 import android.content.Context
 import android.media.MediaCodec

@@ -1,4 +1,4 @@
-package org.lighilit.control_loop_music
+package top.lighilit.control_loop_music
 
 import org.junit.Test
 

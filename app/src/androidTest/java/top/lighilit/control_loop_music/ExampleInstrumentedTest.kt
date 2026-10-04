@@ -1,4 +1,4 @@
-package org.lighilit.control_loop_music
+package top.lighilit.control_loop_music
 
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -19,6 +19,6 @@ class ExampleInstrumentedTest {
     fun useAppContext() {
         // Context of the app under test.
         val appContext = InstrumentationRegistry.getInstrumentation().targetContext
-        assertEquals("org.lighilit.control_loop_music", appContext.packageName)
+        assertEquals("top.lighilit.control_loop_music", appContext.packageName)
     }
 }

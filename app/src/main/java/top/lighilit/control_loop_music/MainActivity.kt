@@ -1,5 +1,5 @@
 //package com.example.controlloopmusic
-package org.lighilit.control_loop_music
+package top.lighilit.control_loop_music
 
 import android.Manifest
 import android.app.Activity
@@ -70,12 +70,16 @@ class MainActivity : Activity()
     private var currentWaveform = FloatArray(0)
     private var waveformRequestId = 0
 
+    private val actionToStart: String get() = "$packageName.TO_START"
+    private val actionTogglePlay: String get() = "$packageName.TOGGLE_PLAY"
+    private val actionToEnd: String get() = "$packageName.TO_END"
+
     private val notificationActionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
-                ACTION_TO_START -> seekToLoopStart()
-                ACTION_TOGGLE_PLAY -> togglePlayback()
-                ACTION_TO_END -> seekToLoopEnd()
+                actionToStart -> seekToLoopStart()
+                actionTogglePlay -> togglePlayback()
+                actionToEnd -> seekToLoopEnd()
             }
         }
     }
@@ -124,9 +128,9 @@ class MainActivity : Activity()
             isActive = true
         }
         val actionFilter = IntentFilter().apply {
-            addAction(ACTION_TO_START)
-            addAction(ACTION_TOGGLE_PLAY)
-            addAction(ACTION_TO_END)
+            addAction(actionToStart)
+            addAction(actionTogglePlay)
+            addAction(actionToEnd)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(notificationActionReceiver, actionFilter, Context.RECEIVER_NOT_EXPORTED)
@@ -597,14 +601,14 @@ class MainActivity : Activity()
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setShowWhen(false)
             .setOngoing(isPlaying)
-            .addAction(buildNotificationAction(R.drawable.ic_loop_start, "Loop start", ACTION_TO_START, 1))
+            .addAction(buildNotificationAction(R.drawable.ic_loop_start, "Loop start", actionToStart, 1))
             .addAction(buildNotificationAction(
                     if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play,
                     "Play/Pause",
-                    ACTION_TOGGLE_PLAY,
+                    actionTogglePlay,
                     2
 	    ))
-            .addAction(buildNotificationAction(R.drawable.ic_loop_end, "Loop end", ACTION_TO_END, 3))
+            .addAction(buildNotificationAction(R.drawable.ic_loop_end, "Loop end", actionToEnd, 3))
             .setStyle(
                 Notification.MediaStyle()
                     .setMediaSession(mediaSession.sessionToken)
@@ -650,9 +654,6 @@ class MainActivity : Activity()
         private const val NOTIFICATION_ID = 7
         private const val REQUEST_POST_NOTIFICATIONS = 2001
         private const val NOTIFICATION_CHANNEL_ID = "playback"
-        private const val ACTION_TO_START = "org.lighilit.control_loop_music.TO_START"
-        private const val ACTION_TOGGLE_PLAY = "org.lighilit.control_loop_music.TOGGLE_PLAY"
-        private const val ACTION_TO_END = "org.lighilit.control_loop_music.TO_END"
         private const val KEY_URI = "uri"
         private const val KEY_LOOP_START = "loop_start"
         private const val KEY_LOOP_END = "loop_end"
