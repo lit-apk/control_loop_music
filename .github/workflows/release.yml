@@ -11,9 +11,26 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+
+    env:
+      KEYSTORE_PASSWORD: ${{ secrets.storePassword }}
+      KEY_PASSWORD: ${{ secrets.keyPassword }}
+      KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+
     steps:
       - name: Check out application
         uses: actions/checkout@v4
+
+      - name: Configure signing
+        run: |
+          mkdir -p sign
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > sign/release.keystore
+          cat > keystore.properties <<EOF
+          storeFile=sign/release.keystore
+          storePassword=${KEYSTORE_PASSWORD}
+          keyAlias=data-sync
+          keyPassword=${KEY_PASSWORD}
+          EOF
 
       - name: Build and test
         run: |
